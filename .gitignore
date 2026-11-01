@@ -1,0 +1,10 @@
+weights/
+local_fits/
+temp_downloads/
+
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pycache/
