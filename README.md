@@ -13,7 +13,7 @@
 
 2. **Create and activate the Conda environment:**
    ```bash
-   conda env create -f environment.yml
+   conda env create -f environment.yml               #Change this to the actual environment file when done
    conda activate your_env_name
    ```
 
@@ -27,6 +27,7 @@ Jellyfish_Finder/
 ├── weights/                   Folder to contain the .pth weights file
 ├── config.ini                 Configuration file used to specify mode and user parameters
 ├── run_jellyfish_finder.py    Main Python script
+├── env.yml                    Environment file containing all required packages
 
 ```
 
