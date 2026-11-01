@@ -1,6 +1,6 @@
-weights/
-local_fits/
-temp_downloads/
+#weights/
+#local_fits/
+#temp_downloads/
 
 
 __pycache__/
