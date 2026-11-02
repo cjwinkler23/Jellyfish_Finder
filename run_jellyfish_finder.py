@@ -82,7 +82,11 @@ def load_config(config_path):
 
     weights_path = Path(weights_str)
     if not weights_path.is_absolute():
-        weights_path = (WEIGHTS_DIR / weights_path).resolve()
+
+        if weights_path.parts and weights_path.parts[0] == "weights":
+            weights_path = (BASE_DIR / weights_path).resolve()
+        else:
+            weights_path = (WEIGHTS_DIR / weights_path).resolve()
 
     if not weights_path.exists():
         print(f"[ERROR] Weights file cannot be found at: {weights_path}")
