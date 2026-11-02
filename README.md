@@ -1,6 +1,6 @@
 # Jellyfish Finder
 <p align="center">
-  <img src="C:\Users\cjwin\Downloads\JellyfishFinder_Logo.png" width="220"/>
+  <img src="JellyfishFinder_Logo.png" width="300"/>
 </p>
 
 **Version:** V1
@@ -17,7 +17,7 @@
 2. **Create and activate the Conda environment:**
    ```bash
    conda env create -f env.yml            #Make environment file
-   conda activate JellyfishFinder
+   conda activate jellyfish_env
    ```
 
 ## Repository Structure
@@ -60,6 +60,45 @@ The run_jellyfish_finder.py script can be run in one of three modes depending on
    - Jellyfish galaxy candidates found within those images will be saved to the output_candidates/ folder
 
 ## Usage
+1. **Begin by setting up the *config.ini* file:**
+   - Open *config.ini* either using CLI or a text editor.
+   - Values under \[DEFAULT\] should only be changed if a different default value is preferred. These will be used as a fallback if a required value is missing or commented out.
+   - Type the preferred mode next to 'mode = '. Descriptions are given above.
+   - Under \[MODEL\], 'weights_file' is required. Specify the path to the .pth file to be used for inference. If the weights are put in 'weights/' as recommended, path can be given as 'model.pth' or 'weights/model.path'. Instructions for downloading the weights are given below.
+   - For the rest of the *config.ini* file, only the parameters under the chosen mode's section are required to have a value. Parameters that have a listed default value can be left blank or commented out if the default value is wanted.
+   - Parameters that require a path to be given can be absolute from the drive or relative from the project directory. Ex: If csv_file.csv is at 'Jellyfish_Finder/tables/csv_file.csv', the path given should be absolute from the drive or realtive (./tables/csv_file.csv or simply tables/csv_file.csv).
+  
+2. **Run the Jellyfish_Finder Python Script:**
+   - Within anaconda prompt, ensure the jellyfish_env environment is active and the current working directory is Jellyfish_Finder. If not already, run:
+     ```bash  
+     conda activate jellyfish_env
+     cd path/to/Jellyfish_Finder    #Replace with real path to project directory.
+     ```
+   - To run the script with configuration file named *config.ini* located at 'Jellyfish_Finder/config.ini', no flag is required and it can be run by:
+     ```bash  
+     python run_jellyfish_finder.py
+     ```
+   - If the configuration file has a custom name or was put in a new location, using the configuration designation, run:
+     ```bash  
+     python run_jellyfish_finder.py config_path/my_custom_config.ini    #Replacing with the file's name and path
+     ```
+
+3. **Output Jellyfish Galaxy Candidates:**
+   - All galaxy cutouts that received an inference score above the 'percent_conf' value will be stored in 'output_candidates/'.
+   - Files will be named according to the mdoe that was used:
+     - **obs_id**:
+       - percent score, host cluster name, observation id, RA, DEC
+       - Ex: Score-87.22%__MACSJ0553-3342__jw06882-o023_t023_nircam_clear-f150w__RA-88.323-DEC--33.711.jpg
+     - **name_coords**:
+       - percent score, cluster name (if given), observation id (found from MAST), RA, DEC
+       - Ex: Score-63.49%__MACSJ0553-3342__jw06882-o023_t023_nircam_clear-f150w__RA-88.292-DEC--33.707.jpg
+     - **local**:
+       - percent score, fits file name it came from, RA, DEC
+       - Ex: Score-95.87%__A3627_f444w__RA-36.29-DEC-108.71.jpg
+
+4. **Visual Check to Determine True Candidates:**
+   - Once the script finishes and all cutouts are in 'output_candidates/', the user can visually determine whether or not each cutout is actually a potential jellyfish galaxy.
+   - **Note:** The higher the minimum percent_conf parameter is set, the fewer candidates will be output. To ensure potential jellyfish galaxies aren't excluded, one can lower the percent_conf and do a longer manual identification later.
 
 
 ## Weights
@@ -71,14 +110,6 @@ The current model has resulted from:
 - **Backbone Architecture:** Meta's [DINOv2 ViT-S/14](https://github.com/facebookresearch/dinov2 "facebookresearch/dinov2") weights.
 - **Training Framework:** Fine-tuning was done using the script provided by [AstroVink](https://github.com/SaamieVincken/AstroVink).
 - **Fine-Tuning:** All transformer layers and the final classification head were left unfrozen and fine-tuned on a sample of ~50 (V1) RPS galaxies.
-
-
-
-
-
-
-
-
 
 
 
