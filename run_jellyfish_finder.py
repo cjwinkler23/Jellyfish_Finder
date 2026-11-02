@@ -55,7 +55,7 @@ def load_config(config_path):
         sys.exit(1)
 
     cfg = configparser.ConfigParser(
-        delimiters=('='),
+        delimiters=('=', ':'),
         inline_comment_prefixes=('#')
     )
 
@@ -144,7 +144,7 @@ def load_config(config_path):
         else:
             local_dir = LOCAL_FITS_DIR
             if not local_dir.exists() or not local_dir.is_dir():
-                print("[ERROR] Under mode 'local' no data path was given. Tried to fallback to './local_fits/', but the folder no longre exists.")
+                print("[ERROR] Under mode 'local' no data path was given. Tried to fallback to './local_fits/', but the folder no longer exists.")
                 sys.exit(1)
 
             valid_ext = (".fits", ".fit", ".fits.gz")
