@@ -30,7 +30,7 @@ Jellyfish_Finder/
 ├── weights/                   Folder to contain the .pth weights file
 ├── config.ini                 Configuration file used to specify mode and user parameters
 ├── run_jellyfish_finder.py    Main Python script
-├── env.yml                    Environment file containing all required packages
+└── env.yml                    Environment file containing all required packages
 
 ```
 
