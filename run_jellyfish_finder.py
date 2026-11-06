@@ -11,6 +11,37 @@ WEIGHTS_DIR = BASE_DIR / "weights"
 TEMP_DOWNLOADS_DIR = BASE_DIR / "temp_downloads"
 OUTPUT_DIR = BASE_DIR / "output_candidates"
 
+valid_filters = (
+    # --- JWST NIRCam Filters ---
+    "F070W", "F090W", "F115W", "F150W", "F200W", "F140M", "F162M", "F182M", 
+    "F210M", "F164N", "F187N", "F212N", "F277W", "F356W", "F444W", "F322W2", 
+    "F444W2", "F250M", "F300M", "F335M", "F360M", "F410M", "F430M", "F460M", 
+    "F480M", "F323N", "F405N", "F466N", "F470N",
+    
+    # --- JWST MIRI Filters ---
+    "F560W", "F770W", "F1000W", "F1130W", "F1280W", "F1500W", "F1800W", "F2100W", 
+    "F2550W", "F1065C", "F1140C", "F1550C", "F2300C",
+    
+    # --- JWST NIRISS Filters (Unique to NIRISS) ---
+    "F158M", "F380M",
+    
+    # --- Hubble WFC3 UVIS & IR Filters ---
+    "F218W", "F225W", "F275W", "F336W", "F390W", "F438W", "F475W", "F555W", 
+    "F606W", "F625W", "F775W", "F814W", "F850LP", "F390M", "F410M", "F467M", 
+    "F547M", "F689M", "F763M", "F845M", "F280N", "F343N", "F373N", "F395N", 
+    "F469N", "F487N", "F502N", "F631N", "F645N", "F656N", "F657N", "F658N", 
+    "F660N", "F673N", "F680N", "F953N", "F105W", "F110W", "F125W", "F140W", 
+    "F160W", "F098M", "F127M", "F139M", "F153M", "F126N", "F128N", "F130N", 
+    "F167N",
+    
+    # --- Hubble ACS Filters (Unique to ACS) ---
+    "F435W", "F550M", "F892N", "F115LP", "F122LP", "F125LP", "F140LP", "F150LP", 
+    "F165LP", "F122M",
+    
+    # --- Hubble STIS Filters ---
+    "50CCD", "F28X50LP", "F28X50OIII", "F28X50OII", "F25SRF2", "F25QTZ", "F25CN270")
+
+
 def get_config_val(cfg, section, key, fallback=None, cast_type=str, is_list=False):
 
     # If the specified key doesn't exist, an empty string will be returned
@@ -32,7 +63,15 @@ def get_config_val(cfg, section, key, fallback=None, cast_type=str, is_list=Fals
 
     # Sets final variable type
     if cast_type == bool:
-        return val.lower() in ("true", "1", "yes", "on")
+        val_clean = val.lower()
+        if val_clean in ("true", "1", "yes", "on"):
+            return True
+        elif val_clean in ("false", "0", "no", "off"):
+            return False
+        else:
+            print(f"[ERROR] Invalid boolean value '{val}' for setting '{key}' in section [{section}]. Expected True/False, 1/0, Yes/No, or On/Off.")
+            sys.exit(1)
+
     elif cast_type == float:
         return float(val)
     elif cast_type == int:
@@ -94,6 +133,9 @@ def load_config(config_path):
 
     # Get the minimum percent confidence from config file
     percent_conf = get_config_val(cfg, "MODEL", "percent_conf", fallback=0.6, cast_type=float)
+    if percent_conf < 0.0 or percent_conf > 1.0:
+        print("[ERROR] Invalid value given for 'percent_conf' under [MODEL] section. Please enter a value between 0 and 1, or leave blank for the default value of 0.6 (60%).")
+        sys.exit(1)
 
     #Create a set of parameters to add to depending on mode
     params = {
@@ -124,7 +166,7 @@ def load_config(config_path):
 
 
     # --- LOCAL MODE --- #
-    if params["mode"] == "local":
+    elif params["mode"] == "local":
 
         # Get folder path containing local fits files (Checks later that only fits files are used)
         data_path_str = get_config_val(cfg, "LOCAL_MODE", "data_dir")
@@ -165,8 +207,89 @@ def load_config(config_path):
 
 
     # --- NAME_COORDS MODE --- #
+    elif params["mode"] == "name_coords":        
+
+        #Get CSV path containing cluster_name, RA, DEC, radius
+        csv_str = get_config_val(cfg, "NAME_COORDS_MODE", "csv_path")
+        if not csv_str:
+            print("[ERROR] No path given for 'csv_path' under [NAME_COORDS_MODE] section, which is required.")
+            sys.exit(1)
+
+        csv_path = Path(csv_str)
+        if not csv_path.is_absolute():
+            csv_path = (BASE_DIR / csv_path).resolve()
+
+        if not csv_path.exists():
+            print(f"[ERROR] CSV file cannot be found at: {csv_path}")
+            sys.exit(1)
+
+        params["csv_path"] = csv_path
+
+        #Get Filter List Preference
+        filter_list = get_config_val(cfg, "NAME_COORDS_MODE", "filt_list", fallback=[], is_list=True)
+        if filter_list:
+            invalid_filters = []
+            keep_filters = []
+            for filter in filter_list:
+                if filter.upper() not in valid_filters:
+                    invalid_filters.append(filter)
+                else:
+                    keep_filters.append(filter.upper())
+
+            if not keep_filters:
+                print("[ERROR] No valid filters given for 'filt_list' under [NAME_COORDS_MODE] section.")
+                print("Please pick filters from the following:")
+                print(valid_filters)
+                sys.exit(1)
+
+            elif invalid_filters:
+                print(f"[ERROR] Invalid filters given in 'filt_list' under [NAME_COORDS_MODE] section. The following filters will be ignored: {invalid_filters}")
+                print(f"The new filter list in order of priority is {keep_filters}")
+
+            else:
+                print(f"Using given prioritized filter list: {keep_filters}")
+
+            filter_list = keep_filters
+            params["filt_list"] = filter_list
+
+        else:
+            params["filt_list"] = []
+
+        #Get minimum data product level
+        prod_level = get_config_val(cfg, "NAME_COORDS_MODE", "min_prod_level", fallback=3, cast_type=int)
+        if prod_level not in ((1, 2, 3)):
+            print("[ERROR] Invalid value given for 'min_prod_level' under [NAME_COORDS_MODE] section. Please choose from (1, 2, 3) or leave blank for default level 3.")
+            sys.exit(1)
+
+        params["min_prod_level"] = prod_level
+
+        #Get MAST Fallback Radius
+        fallback_radius = get_config_val(cfg, "NAME_COORDS_MODE", "fallback_radius", fallback=10.0, cast_type=float)
+        if fallback_radius > 30.0 or fallback_radius < 0.0:
+            print(f"[ERROR] Invalid fallback radius given: {fallback_radius} arcmin. Valid range: 0-30. Please enter a valid radius or leave empty to use the default radius of 10 arcmin.")
+            sys.exit(1)
+
+        params["fallback_radius"] = fallback_radius
+
+        #Get preference of JWST over HST
+        JWST_pref = get_config_val(cfg, "NAME_COORDS_MODE", "JWST_over_HST", fallback=True, cast_type=bool)
+        params["jwst_over_hst"] = JWST_pref
+
+        #Get Maximum Allowed Overlap between Pointings
+        max_overlap = get_config_val(cfg, "NAME_COORDS_MODE", "max_overlap", fallback=0.25, cast_type=float)
+        if max_overlap < 0.00 or max_overlap > 1.0:
+            print(f"[ERROR] Invalid value of ({max_overlap}) given to 'max_overlap' under [NAME_COORDS_MODE] section. Please enter a value between 0 and 1, or leave empty to use the default value of 0.25 (25%).")
+            sys.exit(1)
+
+        params["max_overlap"] = max_overlap
+
+
+    return params
+
+
 
             
+
 
         
 
