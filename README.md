@@ -104,7 +104,7 @@ The run_jellyfish_finder.py script can be run in one of three modes depending on
 ## Weights
 
 ### Downloading the weights:
-#Put link here for downloading the most recent weights
+Download the weights file 'JellyfishFinder-1.pth' using the Hugging Face [Download Link](https://huggingface.co/cwink23/JellyfishFinder/resolve/main/JellyfishFinder-1.pth) and place the file inside the 'weights/' directory located in the main project folder.
 
 The current model has resulted from:
 - **Backbone Architecture:** Meta's [DINOv2 ViT-S/14](https://github.com/facebookresearch/dinov2 "facebookresearch/dinov2") weights.
