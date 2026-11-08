@@ -758,29 +758,6 @@ def main():
             time_end = time.perf_counter()
             print(f"Finished Opening Data, took {time_end - time_start:.2f} seconds")
 
-            #First turn sky regions into pixel masks for the current image
-            time_start = time.perf_counter()
-            if len(sky_regions) == 0:
-                final_mask = None
-            else:
-                final_mask = np.zeros(data.shape, dtype=int)
-                print("Number of masks made from previous image:", len(sky_regions))
-                print(f"Made zeros mask in shape of data, took {time.perf_counter() - time_start} seconds")
-                for reg in sky_regions:
-                    pixel_reg = reg.to_pixel(wcs)
-                    local_mask = pixel_reg.to_mask()
-                    if local_mask is None:
-                        continue
-                
-                    mask_array = local_mask.to_image(shape=data.shape)
-                    if mask_array is None:
-                        continue
-                    else:
-                        binary_mask = np.where(mask_array > 0, 1, 0)
-                        final_mask |= binary_mask
-                        
-            time_end = time.perf_counter()
-            print(f"Finished Applying Sky Masks, took {time_end - time_start:.2f} seconds")
 
             #Do source detection with mask included in the segmentation function
             time_start = time.perf_counter()
@@ -858,46 +835,20 @@ def main():
 
                 #Give final file name and save if score > user given percentage
                 if percent_jellyfish >= (100 * params["percent_conf"]):
-                    filename = f"Score-{percent_jellyfish}%__{file}__{observation}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                    file_stem = file.name
+
+                    for ext in (".fits.gz", ".fits", ".fit"):
+                        if file_stem.lower().endswith(ext):
+                            file_stem = file_stem[:-len(ext)]
+                            break
+
+                    filename = f"Score-{percent_jellyfish}%__{file_stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
                     output_file_path = OUTPUT_DIR / filename
                     img.save((output_file_path), "JPEG", quality=100)
 
                 #Close Images to free up memory
                 img.close()
                 img_RGB.close()
-        
-
-            #Add to masked region only if there are more than one observations to save computing time. Added at the end
-            if len(cluster_observations[cluster]) > 1 and len(cluster_observations[cluster]) - (i + 1) != 0:
-                
-                valid_space = ~np.isnan(data) & (data != 0)
-                data_mask = np.where(valid_space, 1, 0)
-                contours = measure.find_contours(data_mask, level=0.5)
-                contours = sorted(contours, key=len, reverse=True)
-
-                if len(contours) > 0:
-                    #Save only the two largest contours to cover multiple chips
-                    contour1 = contours[0]
-                    contour2 = contours[1]
-
-                    #Reduce the number of polygon sides using the Ramer-Douglas-Peucker algorithm
-                    reduced_contour1 = measure.approximate_polygon(contour1, tolerance=20.0)
-                    reduced_contour2 = measure.approximate_polygon(contour2, tolerance=20.0)
-
-                    x_pixels1 = reduced_contour1[:, 1]
-                    y_pixels1 = reduced_contour1[:, 0]
-
-                    x_pixels2 = reduced_contour2[:, 1]
-                    y_pixels2 = reduced_contour2[:, 0]
-
-                    sky_coords1 = wcs.pixel_to_world(x_pixels1, y_pixels1)
-                    poly_region1 = PolygonSkyRegion(vertices=sky_coords1)
-
-                    sky_coords2 = wcs.pixel_to_world(x_pixels2, y_pixels2)
-                    poly_region2 = PolygonSkyRegion(vertices=sky_coords2)
-
-                    sky_regions.append(poly_region1)
-                    sky_regions.append(poly_region2)
 
 
 
