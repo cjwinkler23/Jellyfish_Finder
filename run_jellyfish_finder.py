@@ -268,7 +268,7 @@ def load_config(config_path):
                 sys.exit(1)
 
             elif invalid_filters:
-                print(f"[ERROR] Invalid filters given in 'filt_list' under [NAME_COORDS_MODE] section. The following filters will be ignored: {invalid_filters}")
+                print(f"[WARNING] Invalid filters given in 'filt_list' under [NAME_COORDS_MODE] section. The following filters will be ignored: {invalid_filters}")
                 print(f"The new filter list in order of priority is {keep_filters}")
 
             else:
@@ -593,9 +593,11 @@ def main():
                 #Open Downloaded Data and get WCS
                 time_start = time.perf_counter()
                 path = manifest['Local Path'][0]
+
                 with fits.open(path) as image:
-                    data = image['SCI'].data.copy()
-                    header = image['SCI'].header.copy()
+                    sci_hdu = image['SCI'] if 'SCI' in image else image[0]
+                    data = sci_hdu.data.copy()
+                    header = sci_hdu.header.copy()
                 
                 wcs = WCS(header)
                 time_end = time.perf_counter()
@@ -635,7 +637,7 @@ def main():
                 data_subtracted = data - bkg
 
                 sigma = 4.0
-                objects = sep.extract(data_subtracted, thresh=sigma, err=bkg.globalrms, minarea=150) #Was 300
+                objects = sep.extract(data_subtracted, thresh=sigma, err=bkg.globalrms, minarea=150, mask=final_mask) #Was 300
                 print(f"Number of Sources: {len(objects)}")
 
                 #Filter out stars with saturated cores
@@ -685,29 +687,34 @@ def main():
 
                     #Run Inference on cutout image
                     result = None
-                    for attempt in range(5):
+                    attempts = 3
+                    for attempt in range(attempts):
                         try:
                             result = modified_predict(img_RGB, device, model, transform)
                             break
                         except Exception as e:
                             if attempt < attempts - 1:
-                                time.sleep(10)
+                                time.sleep(5)
 
                     if result is None:
+                        img.close()
+                        img_RGB.close()
                         continue
 
-                    prob = result['RPS'] * 100
-                    percent_jellyfish = np.round(prob, 2)
+                    try:
+                        prob = result['RPS'] * 100
+                        percent_jellyfish = np.round(prob, 2)
 
-                    #Give final file name and save if score > 60%
-                    if percent_jellyfish >= 60.0:
-                        filename = f"Score-{percent_jellyfish}%__{cluster}__{observation}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
-                        output_file_path = OUTPUT_DIR / filename
-                        img.save((output_file_path), "JPEG", quality=100)
+                        #Give final file name and save if score > 60%
+                        if percent_jellyfish >= (100 * params["percent_conf"]):
+                            filename = f"Score-{percent_jellyfish}%__{cluster}__{observation}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                            output_file_path = OUTPUT_DIR / filename
+                            img.save((output_file_path), "JPEG", quality=100)
 
-                    #Close Images to free up memory
-                    img.close()
-                    img_RGB.close()
+                    finally:
+                        #Close Images to free up memory
+                        img.close()
+                        img_RGB.close()
             
 
                 #Add to masked region only if there are more than one observations to save computing time. Added at the end
@@ -746,13 +753,21 @@ def main():
     elif params["mode"] == "local":
         print(f"[INFO] Running LOCAL mode on {len(params['file_names'])} fits files.")
 
+        folder_path = TEMP_DOWNLOADS_DIR
+        if os.path.exists(folder_path) and os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)  # Deletes the folder and everything inside it
+            os.makedirs(folder_path)    #Create empty folder
+        else:
+            os.makedirs(folder_path)    #Create empty folder
+
         for file in params["file_names"]:
 
             #Open Downloaded Data and get WCS
             time_start = time.perf_counter()
             with fits.open(file) as image:
-                data = image['SCI'].data.copy()
-                header = image['SCI'].header.copy()
+                sci_hdu = image['SCI'] if 'SCI' in image else image[0]
+                data = sci_hdu.data.copy()
+                header = sci_hdu.header.copy()
             
             wcs = WCS(header)
             time_end = time.perf_counter()
@@ -819,36 +834,41 @@ def main():
 
                 #Run Inference on cutout image
                 result = None
-                for attempt in range(5):
+                attempts = 3
+                for attempt in range(attempts):
                     try:
                         result = modified_predict(img_RGB, device, model, transform)
                         break
                     except Exception as e:
                         if attempt < attempts - 1:
-                            time.sleep(10)
+                            time.sleep(5)
 
                 if result is None:
+                    img.close()
+                    img_RGB.close()
                     continue
 
-                prob = result['RPS'] * 100
-                percent_jellyfish = np.round(prob, 2)
+                try:
+                    prob = result['RPS'] * 100
+                    percent_jellyfish = np.round(prob, 2)
 
-                #Give final file name and save if score > user given percentage
-                if percent_jellyfish >= (100 * params["percent_conf"]):
-                    file_stem = file.name
+                    #Give final file name and save if score > user given percentage
+                    if percent_jellyfish >= (100 * params["percent_conf"]):
+                        file_stem = file.name
 
-                    for ext in (".fits.gz", ".fits", ".fit"):
-                        if file_stem.lower().endswith(ext):
-                            file_stem = file_stem[:-len(ext)]
-                            break
+                        for ext in (".fits.gz", ".fits", ".fit"):
+                            if file_stem.lower().endswith(ext):
+                                file_stem = file_stem[:-len(ext)]
+                                break
 
-                    filename = f"Score-{percent_jellyfish}%__{file_stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
-                    output_file_path = OUTPUT_DIR / filename
-                    img.save((output_file_path), "JPEG", quality=100)
+                        filename = f"Score-{percent_jellyfish}%__{file_stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                        output_file_path = OUTPUT_DIR / filename
+                        img.save((output_file_path), "JPEG", quality=100)
 
-                #Close Images to free up memory
-                img.close()
-                img_RGB.close()
+                finally:
+                    #Close Images to free up memory
+                    img.close()
+                    img_RGB.close()
 
 
 
