@@ -23,10 +23,6 @@ from astropy.table import Table
 from astropy.coordinates import SkyCoord
 from skimage import measure
 from regions import PolygonSkyRegion
-from photutils.background import Background2D, MedianBackground
-from photutils.segmentation import make_2dgaussian_kernel
-from photutils.segmentation import detect_sources
-from photutils.segmentation import SourceCatalog
 from PIL import Image
 
 
@@ -38,6 +34,7 @@ WEIGHTS_DIR = BASE_DIR / "weights"
 
 TEMP_DOWNLOADS_DIR = BASE_DIR / "temp_downloads"
 OUTPUT_DIR = BASE_DIR / "output_candidates"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 valid_filters = (
     # --- JWST NIRCam Filters ---
@@ -704,8 +701,9 @@ def main():
 
                     #Give final file name and save if score > 60%
                     if percent_jellyfish >= 60.0:
-                        file_name = 'output_candidates/' + 'Score-' + str(percent_jellyfish) + '%__' + cluster + '__' + observation + '__RA-' + str(np.round(coord.ra.value, 3)) + '-DEC-' + str(np.round(coord.dec.value, 3)) + '.jpg'
-                        img.save((file_name), "JPEG", quality=100)
+                        filename = f"Score-{percent_jellyfish}%__{cluster}__{observation}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                        output_file_path = OUTPUT_DIR / filename
+                        img.save((output_file_path), "JPEG", quality=100)
 
                     #Close Images to free up memory
                     img.close()
@@ -745,20 +743,163 @@ def main():
                         sky_regions.append(poly_region2)
 
 
-
-
-
-
     elif params["mode"] == "local":
         print(f"[INFO] Running LOCAL mode on {len(params['file_names'])} fits files.")
 
+        for file in params["file_names"]:
 
+            #Open Downloaded Data and get WCS
+            time_start = time.perf_counter()
+            with fits.open(file) as image:
+                data = image['SCI'].data.copy()
+                header = image['SCI'].header.copy()
+            
+            wcs = WCS(header)
+            time_end = time.perf_counter()
+            print(f"Finished Opening Data, took {time_end - time_start:.2f} seconds")
 
+            #First turn sky regions into pixel masks for the current image
+            time_start = time.perf_counter()
+            if len(sky_regions) == 0:
+                final_mask = None
+            else:
+                final_mask = np.zeros(data.shape, dtype=int)
+                print("Number of masks made from previous image:", len(sky_regions))
+                print(f"Made zeros mask in shape of data, took {time.perf_counter() - time_start} seconds")
+                for reg in sky_regions:
+                    pixel_reg = reg.to_pixel(wcs)
+                    local_mask = pixel_reg.to_mask()
+                    if local_mask is None:
+                        continue
+                
+                    mask_array = local_mask.to_image(shape=data.shape)
+                    if mask_array is None:
+                        continue
+                    else:
+                        binary_mask = np.where(mask_array > 0, 1, 0)
+                        final_mask |= binary_mask
+                        
+            time_end = time.perf_counter()
+            print(f"Finished Applying Sky Masks, took {time_end - time_start:.2f} seconds")
 
+            #Do source detection with mask included in the segmentation function
+            time_start = time.perf_counter()
+            data = data.astype(np.float32, copy=False)
+            if not data.flags['C_CONTIGUOUS']:
+                data = np.ascontiguousarray(data)
 
+            bkg = sep.Background(data, bw=200, bh=200, fw=3, fh=3)
+            data_subtracted = data - bkg
 
+            sigma = 4.0
+            objects = sep.extract(data_subtracted, thresh=sigma, err=bkg.globalrms, minarea=150) #Was 300
+            print(f"Number of Sources: {len(objects)}")
 
+            #Filter out stars with saturated cores
+            #objects = objects[objects['peak'] <= 35]
+
+            #Filter out sources with too small of size based on bounding box size
+            widths = objects['xmax'] - objects['xmin']
+            heights = objects['ymax'] - objects['ymin']
+            size_squared = (widths**2) + (heights**2)
+
+            filtered_objects = objects[size_squared >= 25.0**2]
+            print(f"Number of filtered sources: {len(filtered_objects)}")
+
+            time_end = time.perf_counter()
+            print(f"Finished Source Detection and Filtering, took {time_end - time_start:.2f} seconds")
+
+            #Create a 2D cutot for each source
+            scale_factor = 2.5
+            for obj in filtered_objects:
+                width = obj['xmax'] - obj['xmin']
+                height = obj['ymax'] - obj['ymin']
+                length = np.sqrt((width)**2 + (height)**2)
+                scaled_length = length * scale_factor
+
+                center_x = obj['x']
+                center_y = obj['y']
+
+                coord = SkyCoord.from_pixel(center_x, center_y, wcs = wcs, origin=0)
+
+                cutout = Cutout2D(data, coord, scaled_length, wcs=wcs, mode='trim')
+                cutout_data = cutout.data
+
+                clipped_data = np.clip(cutout_data, np.nanpercentile(cutout_data, 0.25), np.nanpercentile(cutout_data, 99.75))
+                clipped_data -= np.nanmin(clipped_data)
+                log_stretched = np.log1p(15 * clipped_data)
+                
+                max_val = np.nanmax(log_stretched)
+                if max_val > 0:
+                    scaled_data = (log_stretched / max_val * 255)
+                    clean_data = np.nan_to_num(scaled_data, nan=0.0, posinf=255.0, neginf=0.0)
+                    final_image_array = clean_data.astype(np.uint8)
+                else:
+                    final_image_array = np.zeros(log_stretched.shape, dtype=np.uint8)
+
+                img = Image.fromarray(final_image_array, mode='L')
+                img_RGB = img.convert("RGB")
+
+                #Run Inference on cutout image
+                result = None
+                for attempt in range(5):
+                    try:
+                        result = modified_predict(img_RGB, device, model, transform)
+                        break
+                    except Exception as e:
+                        if attempt < attempts - 1:
+                            time.sleep(10)
+
+                if result is None:
+                    continue
+
+                prob = result['RPS'] * 100
+                percent_jellyfish = np.round(prob, 2)
+
+                #Give final file name and save if score > user given percentage
+                if percent_jellyfish >= (100 * params["percent_conf"]):
+                    filename = f"Score-{percent_jellyfish}%__{file}__{observation}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                    output_file_path = OUTPUT_DIR / filename
+                    img.save((output_file_path), "JPEG", quality=100)
+
+                #Close Images to free up memory
+                img.close()
+                img_RGB.close()
         
+
+            #Add to masked region only if there are more than one observations to save computing time. Added at the end
+            if len(cluster_observations[cluster]) > 1 and len(cluster_observations[cluster]) - (i + 1) != 0:
+                
+                valid_space = ~np.isnan(data) & (data != 0)
+                data_mask = np.where(valid_space, 1, 0)
+                contours = measure.find_contours(data_mask, level=0.5)
+                contours = sorted(contours, key=len, reverse=True)
+
+                if len(contours) > 0:
+                    #Save only the two largest contours to cover multiple chips
+                    contour1 = contours[0]
+                    contour2 = contours[1]
+
+                    #Reduce the number of polygon sides using the Ramer-Douglas-Peucker algorithm
+                    reduced_contour1 = measure.approximate_polygon(contour1, tolerance=20.0)
+                    reduced_contour2 = measure.approximate_polygon(contour2, tolerance=20.0)
+
+                    x_pixels1 = reduced_contour1[:, 1]
+                    y_pixels1 = reduced_contour1[:, 0]
+
+                    x_pixels2 = reduced_contour2[:, 1]
+                    y_pixels2 = reduced_contour2[:, 0]
+
+                    sky_coords1 = wcs.pixel_to_world(x_pixels1, y_pixels1)
+                    poly_region1 = PolygonSkyRegion(vertices=sky_coords1)
+
+                    sky_coords2 = wcs.pixel_to_world(x_pixels2, y_pixels2)
+                    poly_region2 = PolygonSkyRegion(vertices=sky_coords2)
+
+                    sky_regions.append(poly_region1)
+                    sky_regions.append(poly_region2)
+
+
 
     elif params["mode"] == "name_coords":
         print(f"[INFO] Running NAME_COORDS mode.")
