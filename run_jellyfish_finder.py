@@ -437,10 +437,6 @@ class FocalLoss(nn.Module):
 
 
 def calculate_circle_overlap(coord1, r1_deg, coord2, r2_deg):
-    """
-    Calculates fractional overlap between two circular pointings on the sky:
-    returns Area(Intersection) / Min(Area1, Area2).
-    """
     d = coord1.separation(coord2).deg
 
     # No overlap
@@ -455,9 +451,15 @@ def calculate_circle_overlap(coord1, r1_deg, coord2, r2_deg):
     r1, r2 = r1_deg, r2_deg
     r1_sq, r2_sq = r1**2, r2**2
 
-    part1 = r1_sq * np.arccos((d**2 + r1_sq - r2_sq) / (2 * d * r1))
-    part2 = r2_sq * np.arccos((d**2 + r2_sq - r1_sq) / (2 * d * r2))
-    part3 = 0.5 * np.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
+    # Clip values to [-1.0, 1.0] to prevent floating-point arccos NaN
+    val1 = np.clip((d**2 + r1_sq - r2_sq) / (2 * d * r1), -1.0, 1.0)
+    val2 = np.clip((d**2 + r2_sq - r1_sq) / (2 * d * r2), -1.0, 1.0)
+
+    part1 = r1_sq * np.arccos(val1)
+    part2 = r2_sq * np.arccos(val2)
+    
+    arg3 = (-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)
+    part3 = 0.5 * np.sqrt(max(0.0, arg3))
 
     intersection_area = part1 + part2 - part3
     min_area = np.pi * min(r1, r2)**2
@@ -470,26 +472,31 @@ def get_obs_priority(row, params):
 
     # Rule 1: Mission Priority (JWST vs HST)
     if params["jwst_over_hst"]:
-        # JWST = 0 (higher priority), HST = 1
         mission_rank = 0 if mission == "JWST" else 1
     else:
-        # Both JWST and HST get 0 (no mission preference)
         mission_rank = 0
 
-    # Rule 2: Filter Priority (Highest priority in params["filt_list"] gets lowest index)
-    obs_filt = str(row.get('filters', row.get('filter', ''))).strip().upper()
-    filt_rank = 999  # Fallback rank for unlisted filters
+    # Rule 2: Filter Priority
+    obs_filt = ""
+    if 'filters' in row.colnames:
+        obs_filt = str(row['filters']).strip().upper()
+    elif 'filter' in row.colnames:
+        obs_filt = str(row['filter']).strip().upper()
+
+    filt_rank = 999
     if params["filt_list"]:
         for idx, target_filt in enumerate(params["filt_list"]):
             if target_filt.upper() in obs_filt:
                 filt_rank = idx
                 break
 
-    # Rule 3: Tie-breaker by calibration level (Level 3 before Level 2)
-    try:
-        level_rank = -int(row.get('calib_level', 0))
-    except (ValueError, TypeError):
-        level_rank = 0
+    # Rule 3: Data Level Rank
+    level_rank = 0
+    if 'calib_level' in row.colnames and row['calib_level'] is not None:
+        try:
+            level_rank = -int(row['calib_level'])
+        except (ValueError, TypeError):
+            level_rank = 0
 
     return (mission_rank, filt_rank, level_rank)
 
@@ -970,11 +977,15 @@ def main():
                 print(f"[WARNING] Skipping row {index + 1}. Both cluster name and coordinates are missing... Skipping Row.")
                 continue
 
+            #Script for name only
             if has_name and not has_coords:
                 print(f"[ROW {index + 1}]: Name only -> Searching MAST with cluster name.")
-
-                #Script for name only
-                obs_table = Observations.query_object(name, radius=radius)
+                
+                try:
+                    obs_table = Observations.query_object(name, radius=radius)
+                except Exception as e:
+                    print(f"[ERROR] Target name search failed for '{name}' on Row {index + 1}: {e}")
+                    continue
 
                 obs_collection_upper = np.char.upper(obs_table['obs_collection'].astype(str))
                 allowed_missions_mask = np.isin(obs_collection_upper, ['JWST', 'HST'])
@@ -1005,7 +1016,7 @@ def main():
                     c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
 
                     # Estimate FOV radius in degrees
-                    c_fov = candidate.get('fov', None)
+                    c_fov = candidate['fov'] if 'fov' in candidate.colnames else None
                     c_radius = (float(c_fov) / 2.0) if (c_fov is not None and not np.isnan(float(c_fov)) and float(c_fov) > 0) else 0.03
 
                     is_overlapping = False
