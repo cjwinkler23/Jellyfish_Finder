@@ -90,7 +90,7 @@ The run_jellyfish_finder.py script can be run in one of three modes depending on
        - percent score, host cluster name, observation id, RA, DEC
        - Ex: Score-87.22%__MACSJ0553-3342__jw06882-o023_t023_nircam_clear-f150w__RA-88.323-DEC--33.711.jpg
      - **name_coords**:
-       - percent score, cluster name (if given), observation id (found from MAST), RA, DEC
+       - percent score, cluster name (if given), file name (found from MAST), RA, DEC
        - Ex: Score-63.49%__MACSJ0553-3342__jw06882-o023_t023_nircam_clear-f150w__RA-88.292-DEC--33.707.jpg
      - **local**:
        - percent score, fits file name it came from, RA, DEC
