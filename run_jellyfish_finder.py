@@ -11,11 +11,12 @@ from torch import nn
 import torch.nn.functional as F
 
 import numpy as np
+import pandas as pd
 import shutil
-import astroquery
 import time
 import sep
 from astropy.io import fits
+from astropy.table import vstack
 from astropy.nddata import Cutout2D
 from astropy.wcs import WCS
 from astroquery.mast import Observations
@@ -435,6 +436,64 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 
+def calculate_circle_overlap(coord1, r1_deg, coord2, r2_deg):
+    """
+    Calculates fractional overlap between two circular pointings on the sky:
+    returns Area(Intersection) / Min(Area1, Area2).
+    """
+    d = coord1.separation(coord2).deg
+
+    # No overlap
+    if d >= (r1_deg + r2_deg):
+        return 0.0
+
+    # One pointing completely inside the other
+    if d <= abs(r1_deg - r2_deg):
+        return 1.0
+
+    # Partial overlap
+    r1, r2 = r1_deg, r2_deg
+    r1_sq, r2_sq = r1**2, r2**2
+
+    part1 = r1_sq * np.arccos((d**2 + r1_sq - r2_sq) / (2 * d * r1))
+    part2 = r2_sq * np.arccos((d**2 + r2_sq - r1_sq) / (2 * d * r2))
+    part3 = 0.5 * np.sqrt((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
+
+    intersection_area = part1 + part2 - part3
+    min_area = np.pi * min(r1, r2)**2
+
+    return float(intersection_area / min_area)
+
+
+def get_obs_priority(row, params):
+    mission = str(row['obs_collection']).strip().upper()
+
+    # Rule 1: Mission Priority (JWST vs HST)
+    if params["jwst_over_hst"]:
+        # JWST = 0 (higher priority), HST = 1
+        mission_rank = 0 if mission == "JWST" else 1
+    else:
+        # Both JWST and HST get 0 (no mission preference)
+        mission_rank = 0
+
+    # Rule 2: Filter Priority (Highest priority in params["filt_list"] gets lowest index)
+    obs_filt = str(row.get('filters', row.get('filter', ''))).strip().upper()
+    filt_rank = 999  # Fallback rank for unlisted filters
+    if params["filt_list"]:
+        for idx, target_filt in enumerate(params["filt_list"]):
+            if target_filt.upper() in obs_filt:
+                filt_rank = idx
+                break
+
+    # Rule 3: Tie-breaker by calibration level (Level 3 before Level 2)
+    try:
+        level_rank = -int(row.get('calib_level', 0))
+    except (ValueError, TypeError):
+        level_rank = 0
+
+    return (mission_rank, filt_rank, level_rank)
+
+
 # Inference Function
 def modified_predict(img, device, model, transform):
 
@@ -554,9 +613,9 @@ def main():
                 product = product[product['productType'] == 'SCIENCE']
 
                 row = None
-                for i, prod in enumerate(product):
+                for j, prod in enumerate(product):
                     if ".fits" in prod['productFilename']:
-                        row = i
+                        row = j
                         break
 
                 if row is None:
@@ -875,15 +934,279 @@ def main():
     elif params["mode"] == "name_coords":
         print(f"[INFO] Running NAME_COORDS mode.")
 
+        obs = pd.read_csv(params["csv_path"])
+        # Make outer loop to go through each cluster in the csv file
+        for index, row in obs.iterrows():
+
+            # Get cluster name from CSV
+            if pd.isna(row["cluster_name"]):
+                has_name = False
+                name = None
+            else:
+                name = str(row["cluster_name"]).strip()
+                has_name = True
+
+            # Get RA and DEC from CSV
+            if pd.isna(row["RA"]) or pd.isna(row["DEC"]):
+                has_coords = False
+                ra = None
+                dec = None
+            else:
+                ra = float(row["RA"])
+                dec = float(row["DEC"])
+                has_coords = True
+
+            # Get search radius from CSV
+            if pd.isna(row["radius"]):
+                radius = params["fallback_radius"]
+                print(f"[INFO] No radius given for row {index + 1}. Using default value of {params['fallback_radius']} arcmin.")
+            else:
+                radius = float(row["radius"])
+
+            radius = str(radius) + " arcmin"
+            
+
+            if not has_name and not has_coords:
+                print(f"[WARNING] Skipping row {index + 1}. Both cluster name and coordinates are missing... Skipping Row.")
+                continue
+
+            if has_name and not has_coords:
+                print(f"[ROW {index + 1}]: Name only -> Searching MAST with cluster name.")
+
+                #Script for name only
+                obs_table = Observations.query_object(name, radius=radius)
+
+                obs_collection_upper = np.char.upper(obs_table['obs_collection'].astype(str))
+                allowed_missions_mask = np.isin(obs_collection_upper, ['JWST', 'HST'])
+                obs_table = obs_table[allowed_missions_mask]
+
+                if len(obs_table) == 0:
+                    print(f"[WARNING] No JWST or HST observations returned for the cluster: {name}... Skipping.")
+                    continue
+
+                if 'calib_level' in obs_table.colnames:
+                    obs_table = obs_table[obs_table['calib_level'] >= params["min_prod_level"]]
+
+                if len(obs_table) == 0:
+                    print(f"[WARNING] No observations met min_prod_level >= {params['min_prod_level']}. Skipping.")
+                    continue
 
 
+                # Sort observations by priority (JWST_over_HST, then filt_list order)
+                sorted_indices = sorted(range(len(obs_table)), key=lambda idx: get_obs_priority(obs_table[idx], params))
+                sorted_obs_table = obs_table[sorted_indices]
+
+                # Check for overlaps
+                kept_observations = []
+
+                for candidate in sorted_obs_table:
+                    c_ra = float(candidate['s_ra'])
+                    c_dec = float(candidate['s_dec'])
+                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
+
+                    # Estimate FOV radius in degrees
+                    c_fov = candidate.get('fov', None)
+                    c_radius = (float(c_fov) / 2.0) if (c_fov is not None and not np.isnan(float(c_fov)) and float(c_fov) > 0) else 0.03
+
+                    is_overlapping = False
+                    for kept in kept_observations:
+                        k_coord = kept['coord']
+                        k_radius = kept['radius']
+
+                        overlap_fraction = calculate_circle_overlap(c_coord, c_radius, k_coord, k_radius)
+
+                        if overlap_fraction > params["max_overlap"]:
+                            is_overlapping = True
+                            break  # Overlaps higher-priority accepted pointing; reject candidate
+
+                    if not is_overlapping:
+                        kept_observations.append({
+                            'row': candidate,
+                            'coord': c_coord,
+                            'radius': c_radius
+                        })
+
+                if len(kept_observations) == 0:
+                    print(f"[WARNING] No observations remained after overlap filtering for Row {index + 1}. Skipping.")
+                    continue
 
 
+                # Rebuild table of non-overlapping, high-priority observations
+                filtered_obs_table = vstack([item['row'] for item in kept_observations])
+
+                try:
+                    products = Observations.get_product_list(filtered_obs_table)
+                except Exception as e:
+                    print(f"[ERROR] Failed to fetch product list for Row {index + 1}: {e}")
+                    continue
+
+                if products is None or len(products) == 0:
+                    print(f"[WARNING] No data products returned for Row {index + 1}. Skipping.")
+                    continue
 
 
+                # Filter products by image type, calibration level, and file extension
+                products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
+
+                if 'calib_level' in products.colnames:
+                    products = products[products['calib_level'] >= params["min_prod_level"]]
+
+                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"] # Excluded "STIS" and "WFPC2"
+                if 'instrument_name' in products.colnames:
+                    prod_inst = np.char.upper(products['instrument_name'].astype(str))
+                    inst_mask = np.zeros(len(products), dtype=bool)
+                    
+                    for inst in valid_instruments:
+                        inst_mask |= (np.char.find(prod_inst, inst) >= 0)
+
+                    if np.any(inst_mask):
+                        products = products[inst_mask]
+                    else:
+                        print(f"[WARNING] No products matched target instruments: {valid_instruments}. Preserving available science products.")
+
+                fn_upper = np.char.upper(products['productFilename'].astype(str))
+                valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
+                products = products[valid_ext_mask]
+
+                if len(products) == 0:
+                    print(f"[WARNING] No valid FITS science products remain for Row {index + 1} after product filtering. Skipping.")
+                    continue
+
+                # Download Data Products
+                if TEMP_DOWNLOADS_DIR.exists():
+                    shutil.rmtree(TEMP_DOWNLOADS_DIR)
+                TEMP_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+                print(f"[INFO] Downloading {len(products)} FITS science product(s)...")
+                manifest = None
+                try:
+                    Observations.enable_cloud_dataset()
+                    manifest = Observations.download_products(products, download_dir=str(TEMP_DOWNLOADS_DIR), flat=True, cache=True)
+                except Exception:
+                    pass
+
+                if manifest is None:
+                    try:
+                        Observations.disable_cloud_dataset()
+                        manifest = Observations.download_products(products, download_dir=str(TEMP_DOWNLOADS_DIR), flat=True, cache=True)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to download products for Row {index + 1}: {e}")
+                        continue
+
+                fits_paths = [Path(p) for p in manifest['Local Path'] if Path(p).exists()]
+                print(f"[INFO] Processing {len(fits_paths)} downloaded FITS file(s)...")
+
+                target_label = name if has_name else f"RA-{ra:.3f}-DEC-{dec:.3f}"
+
+                for fits_file in fits_paths:
+                    time_start = time.perf_counter()
+                    with fits.open(fits_file) as image:
+                        sci_hdu = image['SCI'] if 'SCI' in image else image[0]
+                        data = sci_hdu.data.copy()
+                        header = sci_hdu.header.copy()
+
+                    wcs = WCS(header)
+
+                    # Source extraction setup
+                    data = data.astype(np.float32, copy=False)
+                    if not data.flags['C_CONTIGUOUS']:
+                        data = np.ascontiguousarray(data)
+
+                    bkg = sep.Background(data, bw=200, bh=200, fw=3, fh=3)
+                    data_subtracted = data - bkg
+
+                    sigma = 4.0
+                    objects = sep.extract(data_subtracted, thresh=sigma, err=bkg.globalrms, minarea=150)
+
+                    # Filter sources by size
+                    widths = objects['xmax'] - objects['xmin']
+                    heights = objects['ymax'] - objects['ymin']
+                    size_squared = (widths**2) + (heights**2)
+
+                    filtered_objects = objects[size_squared >= 25.0**2]
+                    print(f"[INFO] {fits_file.name}: Extracted {len(filtered_objects)} candidate sources.")
+
+                    # Generate cutouts and run inference
+                    scale_factor = 2.5
+                    for obj in filtered_objects:
+                        width = obj['xmax'] - obj['xmin']
+                        height = obj['ymax'] - obj['ymin']
+                        length = np.sqrt(width**2 + height**2)
+                        scaled_length = length * scale_factor
+
+                        center_x = obj['x']
+                        center_y = obj['y']
+
+                        coord = SkyCoord.from_pixel(center_x, center_y, wcs=wcs, origin=0)
+
+                        cutout = Cutout2D(data, coord, scaled_length, wcs=wcs, mode='trim')
+                        cutout_data = cutout.data
+
+                        clipped_data = np.clip(cutout_data, np.nanpercentile(cutout_data, 0.25), np.nanpercentile(cutout_data, 99.75))
+                        clipped_data -= np.nanmin(clipped_data)
+                        log_stretched = np.log1p(15 * clipped_data)
+
+                        max_val = np.nanmax(log_stretched)
+                        if max_val > 0:
+                            scaled_data = (log_stretched / max_val * 255)
+                            clean_data = np.nan_to_num(scaled_data, nan=0.0, posinf=255.0, neginf=0.0)
+                            final_image_array = clean_data.astype(np.uint8)
+                        else:
+                            final_image_array = np.zeros(log_stretched.shape, dtype=np.uint8)
+
+                        img = Image.fromarray(final_image_array, mode='L')
+                        img_RGB = img.convert("RGB")
+
+                        result = None
+                        max_attempts = 3
+                        for attempt in range(max_attempts):
+                            try:
+                                result = modified_predict(img_RGB, device, model, transform)
+                                break
+                            except Exception:
+                                if attempt < max_attempts - 1:
+                                    time.sleep(5)
+
+                        if result is None:
+                            img.close()
+                            img_RGB.close()
+                            continue
+
+                        try:
+                            prob = result['RPS'] * 100
+                            percent_jellyfish = np.round(prob, 2)
+
+                            if percent_jellyfish >= (100 * params["percent_conf"]):
+                                stem = fits_file.name
+                                for ext in (".fits.gz", ".fits", ".fit"):
+                                    if stem.lower().endswith(ext):
+                                        stem = stem[:-len(ext)]
+                                        break
+
+                                filename = f"Score-{percent_jellyfish}%__{target_label}__{stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                                output_file_path = OUTPUT_DIR / filename
+                                img.save(output_file_path, "JPEG", quality=100)
+                        finally:
+                            # Memory cleanup for image objects
+                            img.close()
+                            img_RGB.close()
+
+                    print(f"[INFO] Completed {fits_file.name} in {time.perf_counter() - time_start:.2f}s.")
 
 
-        
+            # Script for coordinates only
+            if not has_name and has_coords:
+                print(f"[ROW {index + 1}]: Cordinates only -> Searching MAST with RA and DEC.")
+
+                
+
+            # Script for name and then for coordinates if name isn't resolved
+            if has_name and has_coords:
+                print(f"[ROW {index + 1}]: Name and Coordinates given -> Searching MAST with Name first, using RA and DEC as a fallback.")
+
+                
+
+                
 
 # Execute Detection Pipeline
 if __name__ == "__main__":
