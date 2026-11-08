@@ -1096,8 +1096,6 @@ def main():
                 fits_paths = [Path(p) for p in manifest['Local Path'] if Path(p).exists()]
                 print(f"[INFO] Processing {len(fits_paths)} downloaded FITS file(s)...")
 
-                target_label = name if has_name else f"RA-{ra:.3f}-DEC-{dec:.3f}"
-
                 for fits_file in fits_paths:
                     time_start = time.perf_counter()
                     with fits.open(fits_file) as image:
@@ -1183,7 +1181,7 @@ def main():
                                         stem = stem[:-len(ext)]
                                         break
 
-                                filename = f"Score-{percent_jellyfish}%__{target_label}__{stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
+                                filename = f"Score-{percent_jellyfish}%__{name}__{stem}__RA-{coord.ra.value:.3f}-DEC-{coord.dec.value:.3f}.jpg"
                                 output_file_path = OUTPUT_DIR / filename
                                 img.save(output_file_path, "JPEG", quality=100)
                         finally:
