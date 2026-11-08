@@ -20,6 +20,16 @@
    conda activate jellyfish_env
    ```
 
+## Weights
+
+### Downloading the weights:
+Download the weights file 'JellyfishFinder-1.pth' using the Hugging Face [Download Link](https://huggingface.co/cwink23/JellyfishFinder/resolve/main/JellyfishFinder-1.pth) and place the file inside the 'weights/' directory located in the main project folder.
+
+The current model has resulted from:
+- **Backbone Architecture:** Meta's [DINOv2 ViT-S/14](https://github.com/facebookresearch/dinov2 "facebookresearch/dinov2") weights.
+- **Training Framework:** Fine-tuning was done using the script provided by [AstroVink](https://github.com/SaamieVincken/AstroVink).
+- **Fine-Tuning:** All transformer layers and the final classification head were left unfrozen and fine-tuned on a sample of ~50 (V1) RPS galaxies.
+
 ## Repository Structure
 
 ```
@@ -99,17 +109,6 @@ The run_jellyfish_finder.py script can be run in one of three modes depending on
 4. **Visual Check to Determine True Candidates:**
    - Once the script finishes and all cutouts are in 'output_candidates/', the user can visually determine whether or not each cutout is actually a potential jellyfish galaxy.
    - **Note:** The higher the minimum percent_conf parameter is set, the fewer candidates will be output. To ensure potential jellyfish galaxies aren't excluded, one can lower the percent_conf and do a longer manual identification later.
-
-
-## Weights
-
-### Downloading the weights:
-Download the weights file 'JellyfishFinder-1.pth' using the Hugging Face [Download Link](https://huggingface.co/cwink23/JellyfishFinder/resolve/main/JellyfishFinder-1.pth) and place the file inside the 'weights/' directory located in the main project folder.
-
-The current model has resulted from:
-- **Backbone Architecture:** Meta's [DINOv2 ViT-S/14](https://github.com/facebookresearch/dinov2 "facebookresearch/dinov2") weights.
-- **Training Framework:** Fine-tuning was done using the script provided by [AstroVink](https://github.com/SaamieVincken/AstroVink).
-- **Fine-Tuning:** All transformer layers and the final classification head were left unfrozen and fine-tuned on a sample of ~50 (V1) RPS galaxies.
 
 
 
