@@ -545,12 +545,13 @@ def get_instrument_radius(candidate):
         return 0.04     # Default fallback (~2.4 arcmin radius)
 
 
+GRISM_KEYWORDS = ["GRISM", "GRISMR", "GRISMC", "GR150R", "GR150C", "G102", "G141", "G800L", "G280"]
+
 def select_single_fits_per_obs(products, params):
     """
     Filters product table to strictly ONE FITS science product per pointing tile.
-    Excludes MAST '_total_', '_detection_', and 'skycell' composite files.
-    Breaks ties between duplicate exposures (e.g. ACS vs WFC3 on the same tile)
-    using an instrument preference ranking.
+    Excludes MAST '_total_', '_detection_', 'skycell', legacy CALHST files, 
+    and spectroscopic Grism exposures.
     """
     if products is None or len(products) == 0:
         return products
@@ -570,18 +571,35 @@ def select_single_fits_per_obs(products, params):
     if len(products) == 0:
         return products
 
-    # Drop legacy CALHST files (e.g. ieq420040_drc.fits) if modern HAP ('hst_...') products exist
+    # 3. Exclude spectroscopic Grism exposures (GRISMR, GRISMC, G141, etc.)
+    grism_mask = np.ones(len(products), dtype=bool)
+    for idx, row in enumerate(products):
+        fn = str(row['productFilename']).upper()
+        filt = ""
+        if 'filters' in row.colnames and row['filters'] is not None:
+            filt = str(row['filters']).upper()
+        elif 'filter' in row.colnames and row['filter'] is not None:
+            filt = str(row['filter']).upper()
+        
+        if any(g_kw in fn or g_kw in filt for g_kw in GRISM_KEYWORDS):
+            grism_mask[idx] = False
+
+    products = products[grism_mask]
+    if len(products) == 0:
+        return products
+
+    # 4. Prefer modern HAP/JWST products over legacy un-prefixed CALHST files
     fn_lower = np.char.lower(products['productFilename'].astype(str))
     hap_jwst_mask = np.char.startswith(fn_lower, 'hst_') | np.char.startswith(fn_lower, 'jw')
     if np.any(hap_jwst_mask):
         products = products[hap_jwst_mask]
 
-    # 3. Filter calibration level
+    # 5. Filter calibration level
     min_level = params.get("min_prod_level", 3)
     if 'calib_level' in products.colnames:
         products = products[products['calib_level'] >= min_level]
 
-    # 4. Strictly filter valid target instruments
+    # 6. Strictly filter valid target instruments
     valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
     if 'instrument_name' in products.colnames:
         prod_inst = np.char.upper(products['instrument_name'].astype(str))
@@ -590,7 +608,7 @@ def select_single_fits_per_obs(products, params):
             inst_mask |= (np.char.find(prod_inst, inst) >= 0)
         products = products[inst_mask]
 
-    # 5. Filter to valid FITS extensions
+    # 7. Filter to valid FITS extensions
     fn_upper = np.char.upper(products['productFilename'].astype(str))
     valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
     products = products[valid_ext_mask]
@@ -602,7 +620,6 @@ def select_single_fits_per_obs(products, params):
     inst_priority = ["NIRCAM", "WFC3", "ACS", "NIRISS", "MIRI"]
 
     def pick_best_index(sub_table):
-        # Step A: Filter match search
         matching_indices = []
         if filt_list:
             for target_filt in filt_list:
@@ -618,13 +635,11 @@ def select_single_fits_per_obs(products, params):
                     if target_upper in obs_filt or target_upper in fname:
                         matching_indices.append(idx)
                 if matching_indices:
-                    break  # Found matches for top-priority filter
+                    break
 
-        # If no filter preference match, consider all rows in sub_table
         if not matching_indices:
             matching_indices = list(range(len(sub_table)))
 
-        # Step B: Tie-break candidates by instrument ranking
         for preferred_inst in inst_priority:
             for idx in matching_indices:
                 row = sub_table[idx]
@@ -635,12 +650,12 @@ def select_single_fits_per_obs(products, params):
 
         return matching_indices[0]
 
-    # 6. Group by visit pointing tile prefix (e.g. 'hst_16730_20' or 'jw01345-o001_t001')
+    # 8. Group by pointing tile stem (e.g. 'hst_16730_20')
     def get_pointing_tile_stem(filename):
         fn = str(filename)
         parts = fn.split('_')
         if fn.lower().startswith('hst') and len(parts) >= 3:
-            return "_".join(parts[:3])  # Collapses 'hst_16730_20_acs' and 'hst_16730_20_wfc3'
+            return "_".join(parts[:3])
         elif fn.lower().startswith('jw') and len(parts) >= 2:
             return "_".join(parts[:2])
         return fn
