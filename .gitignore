@@ -2,6 +2,7 @@
 #local_fits/
 #temp_downloads/
 
+custom_configs/
 
 __pycache__/
 *.pyc
