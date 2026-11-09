@@ -471,7 +471,7 @@ def get_obs_priority(row, params):
     mission = str(row['obs_collection']).strip().upper()
 
     # Rule 1: Mission Priority (JWST vs HST)
-    if params["jwst_over_hst"]:
+    if params.get("jwst_over_hst", True):
         mission_rank = 0 if mission == "JWST" else 1
     else:
         mission_rank = 0
@@ -484,7 +484,7 @@ def get_obs_priority(row, params):
         obs_filt = str(row['filter']).strip().upper()
 
     filt_rank = 999
-    if params["filt_list"]:
+    if params.get("filt_list"):
         for idx, target_filt in enumerate(params["filt_list"]):
             if target_filt.upper() in obs_filt:
                 filt_rank = idx
@@ -492,19 +492,23 @@ def get_obs_priority(row, params):
 
     # Rule 3: Data Level Rank
     level_rank = 0
-    if 'calib_level' in row.colnames and row['calib_level'] is not None:
-        try:
-            level_rank = -int(row['calib_level'])
-        except (ValueError, TypeError):
-            level_rank = 0
+    if 'calib_level' in row.colnames:
+        level_val = row['calib_level']
+        if level_val is not None and not np.ma.is_masked(level_val):
+            try:
+                level_rank = -int(level_val)
+            except Exception:
+                level_rank = 0
 
     # Rule 4: Proposal Recency (Higher proposal ID = newer observation = top priority)
     proposal_rank = 0
-    if 'proposal_id' in row.colnames and row['proposal_id'] is not None:
-        try:
-            proposal_rank = -int(row['proposal_id'])
-        except (ValueError, TypeError):
-            proposal_rank = 0
+    if 'proposal_id' in row.colnames:
+        prop_val = row['proposal_id']
+        if prop_val is not None and not np.ma.is_masked(prop_val):
+            try:
+                proposal_rank = -int(prop_val)
+            except Exception:
+                proposal_rank = 0
 
     return (mission_rank, filt_rank, level_rank, proposal_rank)
 
