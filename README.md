@@ -16,7 +16,7 @@
 
 2. **Create and activate the Conda environment:**
    ```bash
-   conda env create -f env.yml            #Make environment file
+   conda env create -f env.yml
    conda activate jellyfish_env
    ```
 
