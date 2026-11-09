@@ -376,7 +376,7 @@ def load_pretrained_dinov2(device):
     Loads the pretrained DINOv2 ViT-S/14 encoder from Facebook Research hub.
     """
     #Changed encoder to pull the register tokens version instead of "dinov2_vits14"
-    encoder = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg").to(device)
+    encoder = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14_reg", skip_validation=True).to(device)
     return encoder
 
 
