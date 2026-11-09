@@ -535,8 +535,8 @@ def get_instrument_radius(candidate):
 
 def select_single_fits_per_obs(products, params):
     """
-    Filters product table to strictly ONE FITS science product per observation stem.
-    Excludes MAST '_total_' detection images and prioritizes filters in params['filt_list'].
+    Filters product table to strictly ONE FITS science product per observation ID.
+    Excludes MAST '_total_' and '_detection_' stack files and prioritizes filters in params['filt_list'].
     """
     if products is None or len(products) == 0:
         return products
@@ -557,7 +557,7 @@ def select_single_fits_per_obs(products, params):
     if 'calib_level' in products.colnames:
         products = products[products['calib_level'] >= min_level]
 
-    # 4. Strictly filter valid target instruments
+    # 4. Strictly filter valid target instruments (drops WFPC2)
     valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
     if 'instrument_name' in products.colnames:
         prod_inst = np.char.upper(products['instrument_name'].astype(str))
@@ -573,16 +573,6 @@ def select_single_fits_per_obs(products, params):
 
     if len(products) == 0:
         return products
-
-    # 6. Group products by base observation stem (e.g. 'hst_10631_08_acs_wfc')
-    def get_obs_stem(filename):
-        parts = str(filename).split('_')
-        if len(parts) >= 4:
-            return "_".join(parts[:4])  # Groups filters/products from the same visit together
-        return str(filename)
-
-    stems = np.array([get_obs_stem(fn) for fn in products['productFilename']])
-    unique_stems = np.unique(stems)
 
     filt_list = params.get("filt_list", [])
 
@@ -600,11 +590,20 @@ def select_single_fits_per_obs(products, params):
                     fname = str(row['productFilename']).upper()
                     if target_upper in obs_filt or target_upper in fname:
                         return idx
-        return 0  # Default to first FITS file if no prioritized filter is found
+        return 0  # Fallback to first available FITS product
 
+    # 6. Group directly by MAST observation ID
+    group_col = 'obs_id' if 'obs_id' in products.colnames else ('parent_obsid' if 'parent_obsid' in products.colnames else None)
+
+    if group_col is None:
+        best_idx = pick_best_index(products)
+        return products[best_idx:best_idx + 1]
+
+    unique_obs_ids = np.unique(products[group_col])
     selected_rows = []
-    for stem in unique_stems:
-        sub_table = products[stems == stem]
+
+    for oid in unique_obs_ids:
+        sub_table = products[products[group_col] == oid]
         best_idx = pick_best_index(sub_table)
         selected_rows.append(sub_table[best_idx])
 
