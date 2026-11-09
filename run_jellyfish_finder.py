@@ -535,8 +535,8 @@ def get_instrument_radius(candidate):
 
 def select_single_fits_per_obs(products, params):
     """
-    Filters the product table to exactly ONE FITS science product per observation pointing.
-    Prioritizes filters in params['filt_list'] and falls back to the first available FITS file if no filter list is given.
+    Filters product table to strictly ONE FITS science product per observation stem.
+    Excludes MAST '_total_' detection images and prioritizes filters in params['filt_list'].
     """
     if products is None or len(products) == 0:
         return products
@@ -544,22 +544,29 @@ def select_single_fits_per_obs(products, params):
     # 1. Filter to science products only
     products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
 
-    # 2. Filter calibration level
+    # 2. Exclude MAST '_total_' and '_detection_' detection stack files
+    fn_upper = np.char.upper(products['productFilename'].astype(str))
+    non_total_mask = (np.char.find(fn_upper, '_TOTAL_') == -1) & (np.char.find(fn_upper, '_DETECTION_') == -1)
+    products = products[non_total_mask]
+
+    if len(products) == 0:
+        return products
+
+    # 3. Filter calibration level
     min_level = params.get("min_prod_level", 3)
     if 'calib_level' in products.colnames:
         products = products[products['calib_level'] >= min_level]
 
-    # 3. Filter target instruments
+    # 4. Strictly filter valid target instruments
     valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
     if 'instrument_name' in products.colnames:
         prod_inst = np.char.upper(products['instrument_name'].astype(str))
         inst_mask = np.zeros(len(products), dtype=bool)
         for inst in valid_instruments:
             inst_mask |= (np.char.find(prod_inst, inst) >= 0)
-    
         products = products[inst_mask]
 
-    # 4. Filter to valid FITS extensions
+    # 5. Filter to valid FITS extensions
     fn_upper = np.char.upper(products['productFilename'].astype(str))
     valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
     products = products[valid_ext_mask]
@@ -567,9 +574,18 @@ def select_single_fits_per_obs(products, params):
     if len(products) == 0:
         return products
 
+    # 6. Group products by base observation stem (e.g. 'hst_10631_08_acs_wfc')
+    def get_obs_stem(filename):
+        parts = str(filename).split('_')
+        if len(parts) >= 4:
+            return "_".join(parts[:4])  # Groups filters/products from the same visit together
+        return str(filename)
+
+    stems = np.array([get_obs_stem(fn) for fn in products['productFilename']])
+    unique_stems = np.unique(stems)
+
     filt_list = params.get("filt_list", [])
 
-    # Helper function to pick the highest priority filter in an observation product set
     def pick_best_index(sub_table):
         if filt_list:
             for target_filt in filt_list:
@@ -584,22 +600,13 @@ def select_single_fits_per_obs(products, params):
                     fname = str(row['productFilename']).upper()
                     if target_upper in obs_filt or target_upper in fname:
                         return idx
-        return 0  # Fallback to first available FITS product if no prioritized filter matches
+        return 0  # Default to first FITS file if no prioritized filter is found
 
-    # 5. Group by observation ID and keep only 1 best FITS file per observation
-    group_col = 'obs_id' if 'obs_id' in products.colnames else ('parent_obsid' if 'parent_obsid' in products.colnames else None)
-
-    if group_col is None:
-        best_idx = pick_best_index(products)
-        return products[best_idx:best_idx + 1]
-
-    unique_obs_ids = np.unique(products[group_col])
     selected_rows = []
-
-    for obs_id in unique_obs_ids:
-        obs_products = products[products[group_col] == obs_id]
-        best_idx = pick_best_index(obs_products)
-        selected_rows.append(obs_products[best_idx])
+    for stem in unique_stems:
+        sub_table = products[stems == stem]
+        best_idx = pick_best_index(sub_table)
+        selected_rows.append(sub_table[best_idx])
 
     return vstack(selected_rows)
 
