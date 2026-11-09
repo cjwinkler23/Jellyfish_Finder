@@ -498,7 +498,15 @@ def get_obs_priority(row, params):
         except (ValueError, TypeError):
             level_rank = 0
 
-    return (mission_rank, filt_rank, level_rank)
+    # Rule 4: Proposal Recency (Higher proposal ID = newer observation = top priority)
+    proposal_rank = 0
+    if 'proposal_id' in row.colnames and row['proposal_id'] is not None:
+        try:
+            proposal_rank = -int(row['proposal_id'])
+        except (ValueError, TypeError):
+            proposal_rank = 0
+
+    return (mission_rank, filt_rank, level_rank, proposal_rank)
 
 
 def get_instrument_radius(candidate):
@@ -557,6 +565,12 @@ def select_single_fits_per_obs(products, params):
 
     if len(products) == 0:
         return products
+
+    # Drop legacy CALHST files (e.g. ieq420040_drc.fits) if modern HAP ('hst_...') products exist
+    fn_lower = np.char.lower(products['productFilename'].astype(str))
+    hap_jwst_mask = np.char.startswith(fn_lower, 'hst_') | np.char.startswith(fn_lower, 'jw')
+    if np.any(hap_jwst_mask):
+        products = products[hap_jwst_mask]
 
     # 3. Filter calibration level
     min_level = params.get("min_prod_level", 3)
@@ -1193,8 +1207,7 @@ def main():
 
                         # Rejection Rule: Reject if centers are within FOV radius distance 
                         # OR if area overlap exceeds max_overlap
-                        max_radius = max(c_radius, k_radius)
-                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
+                        if sep_deg < (c_radius + k_radius) or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
                             break  # Reject candidate
 
@@ -1428,8 +1441,7 @@ def main():
 
                         # Rejection Rule: Reject if centers are within FOV radius distance 
                         # OR if area overlap exceeds max_overlap
-                        max_radius = max(c_radius, k_radius)
-                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
+                        if sep_deg < (c_radius + k_radius) or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
                             break  # Reject candidate
 
@@ -1654,8 +1666,7 @@ def main():
 
                         # Rejection Rule: Reject if centers are within FOV radius distance 
                         # OR if area overlap exceeds max_overlap
-                        max_radius = max(c_radius, k_radius)
-                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
+                        if sep_deg < (c_radius + k_radius) or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
                             break  # Reject candidate
 
