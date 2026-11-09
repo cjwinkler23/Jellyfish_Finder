@@ -536,7 +536,7 @@ def get_instrument_radius(candidate):
 def select_single_fits_per_obs(products, params):
     """
     Filters the product table to exactly ONE FITS science product per observation pointing.
-    Prioritizes filters in params['filt_list'] and falls back to the first available FITS file.
+    Prioritizes filters in params['filt_list'] and falls back to the first available FITS file if no filter list is given.
     """
     if products is None or len(products) == 0:
         return products
@@ -556,8 +556,8 @@ def select_single_fits_per_obs(products, params):
         inst_mask = np.zeros(len(products), dtype=bool)
         for inst in valid_instruments:
             inst_mask |= (np.char.find(prod_inst, inst) >= 0)
-        if np.any(inst_mask):
-            products = products[inst_mask]
+    
+        products = products[inst_mask]
 
     # 4. Filter to valid FITS extensions
     fn_upper = np.char.upper(products['productFilename'].astype(str))
@@ -1082,7 +1082,7 @@ def main():
                 print(f"[WARNING] Skipping row {index + 1}. Both cluster name and coordinates are missing... Skipping Row.")
                 continue
 
-            #Script for name only
+            # Script for name only
             if has_name and not has_coords:
                 print(f"[ROW {index + 1}]: Name only -> Searching MAST with cluster name.")
                 
@@ -1105,6 +1105,20 @@ def main():
 
                 if len(obs_table) == 0:
                     print(f"[WARNING] No observations met min_prod_level >= {params['min_prod_level']}. Skipping.")
+                    continue
+
+                # Filter observations by instrument
+                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
+
+                if 'instrument_name' in obs_table.colnames:
+                    obs_inst = np.char.upper(obs_table['instrument_name'].astype(str))
+                    inst_mask = np.zeros(len(obs_table), dtype=bool)
+                    for inst in valid_instruments:
+                        inst_mask |= (np.char.find(obs_inst, inst) >= 0)
+                    obs_table = obs_table[inst_mask]
+
+                if len(obs_table) == 0:
+                    print(f"[WARNING] No observations matched target instruments {valid_instruments}. Skipping.")
                     continue
 
 
@@ -1316,6 +1330,20 @@ def main():
                     print(f"[WARNING] No observations met min_prod_level >= {params['min_prod_level']}. Skipping.")
                     continue
 
+                # Filter observations by instrument
+                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
+
+                if 'instrument_name' in obs_table.colnames:
+                    obs_inst = np.char.upper(obs_table['instrument_name'].astype(str))
+                    inst_mask = np.zeros(len(obs_table), dtype=bool)
+                    for inst in valid_instruments:
+                        inst_mask |= (np.char.find(obs_inst, inst) >= 0)
+                    obs_table = obs_table[inst_mask]
+
+                if len(obs_table) == 0:
+                    print(f"[WARNING] No observations matched target instruments {valid_instruments}. Skipping.")
+                    continue
+
                 sorted_indices = sorted(range(len(obs_table)), key=lambda idx: get_obs_priority(obs_table[idx], params))
                 sorted_obs_table = obs_table[sorted_indices]
 
@@ -1506,6 +1534,20 @@ def main():
 
                 if len(obs_table) == 0:
                     print(f"[WARNING] No observations met min_prod_level >= {params['min_prod_level']}. Skipping.")
+                    continue
+
+                # Filter observations by instrument
+                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
+
+                if 'instrument_name' in obs_table.colnames:
+                    obs_inst = np.char.upper(obs_table['instrument_name'].astype(str))
+                    inst_mask = np.zeros(len(obs_table), dtype=bool)
+                    for inst in valid_instruments:
+                        inst_mask |= (np.char.find(obs_inst, inst) >= 0)
+                    obs_table = obs_table[inst_mask]
+
+                if len(obs_table) == 0:
+                    print(f"[WARNING] No observations matched target instruments {valid_instruments}. Skipping.")
                     continue
 
                 sorted_indices = sorted(range(len(obs_table)), key=lambda idx: get_obs_priority(obs_table[idx], params))
