@@ -501,6 +501,109 @@ def get_obs_priority(row, params):
     return (mission_rank, filt_rank, level_rank)
 
 
+def get_instrument_radius(candidate):
+    """
+    Returns a realistic FOV radius (in degrees) for valid target instruments.
+    Uses .colnames checks (no .get() on Astropy Row objects).
+    """
+    inst = ""
+    if 'instrument_name' in candidate.colnames and candidate['instrument_name'] is not None:
+        inst = str(candidate['instrument_name']).upper()
+    elif 'inst_name' in candidate.colnames and candidate['inst_name'] is not None:
+        inst = str(candidate['inst_name']).upper()
+
+    if "NIRCAM" in inst:
+        return 0.04     # ~2.4 arcmin radius
+    elif "MIRI" in inst:
+        return 0.025    # ~1.5 arcmin radius
+    elif "NIRISS" in inst:
+        return 0.035    # ~2.1 arcmin radius
+    elif "WFC3" in inst:
+        return 0.04     # ~2.4 arcmin radius
+    elif "ACS" in inst:
+        return 0.055    # ~3.3 arcmin radius
+    else:
+        if 'fov' in candidate.colnames and candidate['fov'] is not None:
+            try:
+                fov_val = float(candidate['fov'])
+                if not np.isnan(fov_val) and fov_val > 0:
+                    return fov_val / 2.0
+            except (ValueError, TypeError):
+                pass
+        return 0.04     # Default fallback (~2.4 arcmin radius)
+
+
+def select_single_fits_per_obs(products, params):
+    """
+    Filters the product table to exactly ONE FITS science product per observation pointing.
+    Prioritizes filters in params['filt_list'] and falls back to the first available FITS file.
+    """
+    if products is None or len(products) == 0:
+        return products
+
+    # 1. Filter to science products only
+    products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
+
+    # 2. Filter calibration level
+    min_level = params.get("min_prod_level", 3)
+    if 'calib_level' in products.colnames:
+        products = products[products['calib_level'] >= min_level]
+
+    # 3. Filter target instruments
+    valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
+    if 'instrument_name' in products.colnames:
+        prod_inst = np.char.upper(products['instrument_name'].astype(str))
+        inst_mask = np.zeros(len(products), dtype=bool)
+        for inst in valid_instruments:
+            inst_mask |= (np.char.find(prod_inst, inst) >= 0)
+        if np.any(inst_mask):
+            products = products[inst_mask]
+
+    # 4. Filter to valid FITS extensions
+    fn_upper = np.char.upper(products['productFilename'].astype(str))
+    valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
+    products = products[valid_ext_mask]
+
+    if len(products) == 0:
+        return products
+
+    filt_list = params.get("filt_list", [])
+
+    # Helper function to pick the highest priority filter in an observation product set
+    def pick_best_index(sub_table):
+        if filt_list:
+            for target_filt in filt_list:
+                target_upper = target_filt.upper()
+                for idx, row in enumerate(sub_table):
+                    obs_filt = ""
+                    if 'filters' in row.colnames and row['filters'] is not None:
+                        obs_filt = str(row['filters']).upper()
+                    elif 'filter' in row.colnames and row['filter'] is not None:
+                        obs_filt = str(row['filter']).upper()
+                    
+                    fname = str(row['productFilename']).upper()
+                    if target_upper in obs_filt or target_upper in fname:
+                        return idx
+        return 0  # Fallback to first available FITS product if no prioritized filter matches
+
+    # 5. Group by observation ID and keep only 1 best FITS file per observation
+    group_col = 'obs_id' if 'obs_id' in products.colnames else ('parent_obsid' if 'parent_obsid' in products.colnames else None)
+
+    if group_col is None:
+        best_idx = pick_best_index(products)
+        return products[best_idx:best_idx + 1]
+
+    unique_obs_ids = np.unique(products[group_col])
+    selected_rows = []
+
+    for obs_id in unique_obs_ids:
+        obs_products = products[products[group_col] == obs_id]
+        best_idx = pick_best_index(obs_products)
+        selected_rows.append(obs_products[best_idx])
+
+    return vstack(selected_rows)
+
+
 # Inference Function
 def modified_predict(img, device, model, transform):
 
@@ -942,6 +1045,8 @@ def main():
         print(f"[INFO] Running NAME_COORDS mode.")
 
         obs = pd.read_csv(params["csv_path"])
+        obs.columns = obs.columns.str.strip().str.lower()
+
         # Make outer loop to go through each cluster in the csv file
         for index, row in obs.iterrows():
 
@@ -954,13 +1059,13 @@ def main():
                 has_name = True
 
             # Get RA and DEC from CSV
-            if pd.isna(row["RA"]) or pd.isna(row["DEC"]):
+            if pd.isna(row["ra"]) or pd.isna(row["dec"]):
                 has_coords = False
                 ra = None
                 dec = None
             else:
-                ra = float(row["RA"])
-                dec = float(row["DEC"])
+                ra = float(row["ra"])
+                dec = float(row["dec"])
                 has_coords = True
 
             # Get search radius from CSV
@@ -1015,9 +1120,7 @@ def main():
                     c_dec = float(candidate['s_dec'])
                     c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
 
-                    # Estimate FOV radius in degrees
-                    c_fov = candidate['fov'] if 'fov' in candidate.colnames else None
-                    c_radius = (float(c_fov) / 2.0) if (c_fov is not None and not np.isnan(float(c_fov)) and float(c_fov) > 0) else 0.03
+                    c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
                     for kept in kept_observations:
@@ -1057,30 +1160,10 @@ def main():
 
 
                 # Filter products by image type, calibration level, and file extension
-                products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
+                products = select_single_fits_per_obs(products, params)
 
-                if 'calib_level' in products.colnames:
-                    products = products[products['calib_level'] >= params["min_prod_level"]]
-
-                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"] # Excluded "STIS" and "WFPC2"
-                if 'instrument_name' in products.colnames:
-                    prod_inst = np.char.upper(products['instrument_name'].astype(str))
-                    inst_mask = np.zeros(len(products), dtype=bool)
-                    
-                    for inst in valid_instruments:
-                        inst_mask |= (np.char.find(prod_inst, inst) >= 0)
-
-                    if np.any(inst_mask):
-                        products = products[inst_mask]
-                    else:
-                        print(f"[WARNING] No products matched target instruments: {valid_instruments}. Preserving available science products.")
-
-                fn_upper = np.char.upper(products['productFilename'].astype(str))
-                valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
-                products = products[valid_ext_mask]
-
-                if len(products) == 0:
-                    print(f"[WARNING] No valid FITS science products remain for Row {index + 1} after product filtering. Skipping.")
+                if products is None or len(products) == 0:
+                    print(f"[WARNING] No valid FITS science products remain for Row {index + 1}. Skipping.")
                     continue
 
                 # Download Data Products
@@ -1242,8 +1325,7 @@ def main():
                     c_dec = float(candidate['s_dec'])
                     c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
 
-                    c_fov = candidate['fov'] if 'fov' in candidate.colnames else None
-                    c_radius = (float(c_fov) / 2.0) if (c_fov is not None and not np.isnan(float(c_fov)) and float(c_fov) > 0) else 0.03
+                    c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
                     for kept in kept_observations:
@@ -1275,28 +1357,9 @@ def main():
                     print(f"[WARNING] No data products returned for Row {index + 1}. Skipping.")
                     continue
 
-                products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
+                products = select_single_fits_per_obs(products, params)
 
-                if 'calib_level' in products.colnames:
-                    products = products[products['calib_level'] >= params["min_prod_level"]]
-
-                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
-                if 'instrument_name' in products.colnames:
-                    prod_inst = np.char.upper(products['instrument_name'].astype(str))
-                    inst_mask = np.zeros(len(products), dtype=bool)
-                    for inst in valid_instruments:
-                        inst_mask |= (np.char.find(prod_inst, inst) >= 0)
-
-                    if np.any(inst_mask):
-                        products = products[inst_mask]
-                    else:
-                        print(f"[WARNING] No products matched target instruments: {valid_instruments}. Preserving available science products.")
-
-                fn_upper = np.char.upper(products['productFilename'].astype(str))
-                valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
-                products = products[valid_ext_mask]
-
-                if len(products) == 0:
+                if products is None or len(products) == 0:
                     print(f"[WARNING] No valid FITS science products remain for Row {index + 1}. Skipping.")
                     continue
 
@@ -1454,8 +1517,7 @@ def main():
                     c_dec = float(candidate['s_dec'])
                     c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
 
-                    c_fov = candidate['fov'] if 'fov' in candidate.colnames else None
-                    c_radius = (float(c_fov) / 2.0) if (c_fov is not None and not np.isnan(float(c_fov)) and float(c_fov) > 0) else 0.03
+                    c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
                     for kept in kept_observations:
@@ -1487,28 +1549,9 @@ def main():
                     print(f"[WARNING] No data products returned for Row {index + 1}. Skipping.")
                     continue
 
-                products = products[np.char.upper(products['productType'].astype(str)) == 'SCIENCE']
+                products = select_single_fits_per_obs(products, params)
 
-                if 'calib_level' in products.colnames:
-                    products = products[products['calib_level'] >= params["min_prod_level"]]
-
-                valid_instruments = ["NIRCAM", "MIRI", "NIRISS", "WFC3", "ACS"]
-                if 'instrument_name' in products.colnames:
-                    prod_inst = np.char.upper(products['instrument_name'].astype(str))
-                    inst_mask = np.zeros(len(products), dtype=bool)
-                    for inst in valid_instruments:
-                        inst_mask |= (np.char.find(prod_inst, inst) >= 0)
-
-                    if np.any(inst_mask):
-                        products = products[inst_mask]
-                    else:
-                        print(f"[WARNING] No products matched target instruments: {valid_instruments}. Preserving available science products.")
-
-                fn_upper = np.char.upper(products['productFilename'].astype(str))
-                valid_ext_mask = np.char.endswith(fn_upper, '.FITS') | np.char.endswith(fn_upper, '.FITS.GZ') | np.char.endswith(fn_upper, '.FIT')
-                products = products[valid_ext_mask]
-
-                if len(products) == 0:
+                if products is None or len(products) == 0:
                     print(f"[WARNING] No valid FITS science products remain for Row {index + 1}. Skipping.")
                     continue
 

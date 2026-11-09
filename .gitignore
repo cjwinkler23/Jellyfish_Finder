@@ -3,6 +3,7 @@
 #temp_downloads/
 
 custom_configs/
+name_coords_test.csv
 
 __pycache__/
 *.pyc
