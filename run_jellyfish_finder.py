@@ -1165,10 +1165,19 @@ def main():
                 kept_observations = []
 
                 for candidate in sorted_obs_table:
-                    c_ra = float(candidate['s_ra'])
-                    c_dec = float(candidate['s_dec'])
-                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
+                    # Guard against missing/NaN coordinates in MAST records
+                    if 's_ra' not in candidate.colnames or 's_dec' not in candidate.colnames:
+                        continue
+                    
+                    try:
+                        c_ra = float(candidate['s_ra'])
+                        c_dec = float(candidate['s_dec'])
+                        if np.isnan(c_ra) or np.isnan(c_dec):
+                            continue
+                    except (ValueError, TypeError):
+                        continue
 
+                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
                     c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
@@ -1176,11 +1185,18 @@ def main():
                         k_coord = kept['coord']
                         k_radius = kept['radius']
 
+                        # 1. Angular distance between pointing centers (in degrees)
+                        sep_deg = c_coord.separation(k_coord).deg
+
+                        # 2. Geometric area overlap fraction
                         overlap_fraction = calculate_circle_overlap(c_coord, c_radius, k_coord, k_radius)
 
-                        if overlap_fraction > params["max_overlap"]:
+                        # Rejection Rule: Reject if centers are within FOV radius distance 
+                        # OR if area overlap exceeds max_overlap
+                        max_radius = max(c_radius, k_radius)
+                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
-                            break  # Overlaps higher-priority accepted pointing; reject candidate
+                            break  # Reject candidate
 
                     if not is_overlapping:
                         kept_observations.append({
@@ -1384,18 +1400,38 @@ def main():
 
                 kept_observations = []
                 for candidate in sorted_obs_table:
-                    c_ra = float(candidate['s_ra'])
-                    c_dec = float(candidate['s_dec'])
-                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
+                    # Guard against missing/NaN coordinates in MAST records
+                    if 's_ra' not in candidate.colnames or 's_dec' not in candidate.colnames:
+                        continue
+                    
+                    try:
+                        c_ra = float(candidate['s_ra'])
+                        c_dec = float(candidate['s_dec'])
+                        if np.isnan(c_ra) or np.isnan(c_dec):
+                            continue
+                    except (ValueError, TypeError):
+                        continue
 
+                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
                     c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
                     for kept in kept_observations:
-                        overlap_fraction = calculate_circle_overlap(c_coord, c_radius, kept['coord'], kept['radius'])
-                        if overlap_fraction > params["max_overlap"]:
+                        k_coord = kept['coord']
+                        k_radius = kept['radius']
+
+                        # 1. Angular distance between pointing centers (in degrees)
+                        sep_deg = c_coord.separation(k_coord).deg
+
+                        # 2. Geometric area overlap fraction
+                        overlap_fraction = calculate_circle_overlap(c_coord, c_radius, k_coord, k_radius)
+
+                        # Rejection Rule: Reject if centers are within FOV radius distance 
+                        # OR if area overlap exceeds max_overlap
+                        max_radius = max(c_radius, k_radius)
+                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
-                            break
+                            break  # Reject candidate
 
                     if not is_overlapping:
                         kept_observations.append({
@@ -1590,18 +1626,38 @@ def main():
 
                 kept_observations = []
                 for candidate in sorted_obs_table:
-                    c_ra = float(candidate['s_ra'])
-                    c_dec = float(candidate['s_dec'])
-                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
+                    # Guard against missing/NaN coordinates in MAST records
+                    if 's_ra' not in candidate.colnames or 's_dec' not in candidate.colnames:
+                        continue
+                    
+                    try:
+                        c_ra = float(candidate['s_ra'])
+                        c_dec = float(candidate['s_dec'])
+                        if np.isnan(c_ra) or np.isnan(c_dec):
+                            continue
+                    except (ValueError, TypeError):
+                        continue
 
+                    c_coord = SkyCoord(ra=c_ra, dec=c_dec, unit='deg')
                     c_radius = get_instrument_radius(candidate)
 
                     is_overlapping = False
                     for kept in kept_observations:
-                        overlap_fraction = calculate_circle_overlap(c_coord, c_radius, kept['coord'], kept['radius'])
-                        if overlap_fraction > params["max_overlap"]:
+                        k_coord = kept['coord']
+                        k_radius = kept['radius']
+
+                        # 1. Angular distance between pointing centers (in degrees)
+                        sep_deg = c_coord.separation(k_coord).deg
+
+                        # 2. Geometric area overlap fraction
+                        overlap_fraction = calculate_circle_overlap(c_coord, c_radius, k_coord, k_radius)
+
+                        # Rejection Rule: Reject if centers are within FOV radius distance 
+                        # OR if area overlap exceeds max_overlap
+                        max_radius = max(c_radius, k_radius)
+                        if sep_deg < max_radius or overlap_fraction > params["max_overlap"]:
                             is_overlapping = True
-                            break
+                            break  # Reject candidate
 
                     if not is_overlapping:
                         kept_observations.append({
